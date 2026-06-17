@@ -1,12 +1,20 @@
-import { ChatAnthropic } from "@langchain/anthropic";
 import type { AgentDecision } from "./types";
 import { getDb } from "./db";
 
-const model = new ChatAnthropic({
-  model: "claude-haiku-4-5-20251001",
-  temperature: 0.3,
-  maxTokens: 200,
-});
+let _model: InstanceType<typeof import("@langchain/anthropic").ChatAnthropic> | null = null;
+
+function getModel() {
+  if (!_model) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { ChatAnthropic } = require("@langchain/anthropic");
+    _model = new ChatAnthropic({
+      model: "claude-haiku-4-5-20251001",
+      temperature: 0.3,
+      maxTokens: 200,
+    });
+  }
+  return _model!;
+}
 
 const SYSTEM_PROMPT = `You are a viewer budget agent for Lepta, a pay-per-second livestream platform.
 You manage a viewer's spending on a live stream. Each tick you receive the viewer's remaining budget,
@@ -53,7 +61,7 @@ What should we do?`;
   let reasoning = "";
 
   try {
-    const response = await model.invoke([
+    const response = await getModel().invoke([
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userMessage },
     ]);
