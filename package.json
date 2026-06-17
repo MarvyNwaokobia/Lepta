@@ -9,8 +9,13 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@circle-fin/adapter-viem-v2": "^1.11.2",
+    "@circle-fin/app-kit": "^1.7.0",
+    "@circle-fin/x402-batching": "^3.1.2",
     "@langchain/anthropic": "^1.4.1",
     "@langchain/core": "^1.1.49",
+    "@x402/core": "^2.15.0",
+    "@x402/evm": "^2.15.0",
     "better-sqlite3": "^12.11.1",
     "hls.js": "^1.6.16",
     "next": "16.2.9",
@@ -18,7 +23,8 @@
     "react-dom": "19.2.4",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.0",
+    "viem": "^2.52.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -33,6 +39,8 @@
     "typescript": "^5"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3"]
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }

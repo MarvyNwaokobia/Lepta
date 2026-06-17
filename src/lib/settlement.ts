@@ -1,18 +1,27 @@
 import { v4 as uuidv4 } from "uuid";
 import { getDb } from "./db";
 import type { SettlementBatch } from "./types";
+import { getFacilitator, lookupSettlement } from "./circle/gateway";
 
-const BATCH_INTERVAL_MS = 15_000; // flush every 15 seconds
+const BATCH_INTERVAL_MS = 15_000;
+const FACILITATOR_URL = "https://gateway-api-testnet.circle.com";
+const ARC_TESTNET_NETWORK = "eip155:5042002";
 
-export function flushSettlement(streamId: string): SettlementBatch | null {
+export async function flushSettlement(
+  streamId: string
+): Promise<SettlementBatch | null> {
   const db = getDb();
 
   const activeSessions = db
     .prepare(
-      `SELECT session_id, total_accrued FROM viewer_sessions
+      `SELECT session_id, total_accrued, viewer_wallet FROM viewer_sessions
        WHERE stream_id = ? AND status IN ('active', 'paused') AND total_accrued > 0`
     )
-    .all(streamId) as { session_id: string; total_accrued: number }[];
+    .all(streamId) as {
+    session_id: string;
+    total_accrued: number;
+    viewer_wallet: string;
+  }[];
 
   if (activeSessions.length === 0) return null;
 
@@ -32,12 +41,53 @@ export function flushSettlement(streamId: string): SettlementBatch | null {
     0
   );
   const sessionIds = activeSessions.map((s) => s.session_id);
+  const batchId = uuidv4();
+
+  let gatewayTxHash: string | null = null;
+
+  try {
+    const sellerAddress = process.env.SELLER_ADDRESS;
+    if (sellerAddress) {
+      const settleRes = await fetch(
+        `${FACILITATOR_URL}/v1/x402/transfers`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: "USDC",
+            amount: Math.round(totalAmount * 1e6).toString(),
+            network: ARC_TESTNET_NETWORK,
+            toAddress: sellerAddress,
+            idempotencyKey: batchId,
+          }),
+        }
+      );
+
+      if (settleRes.ok) {
+        const settleData = (await settleRes.json()) as {
+          id: string;
+          status: string;
+        };
+        gatewayTxHash = settleData.id;
+        console.log(
+          `[Settlement] Batch ${batchId}: $${totalAmount.toFixed(6)} USDC → ${sellerAddress} (id: ${settleData.id})`
+        );
+      } else {
+        console.warn(
+          `[Settlement] Gateway settle failed: ${settleRes.status}`,
+          await settleRes.text()
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[Settlement] Gateway call failed, recording locally:", err);
+  }
 
   const batch: SettlementBatch = {
-    batch_id: uuidv4(),
+    batch_id: batchId,
     session_ids: sessionIds,
     total_amount: totalAmount,
-    gateway_tx_hash: null, // will be filled by Circle Gateway call
+    gateway_tx_hash: gatewayTxHash,
     settled_at: Date.now(),
   };
 
@@ -52,16 +102,20 @@ export function flushSettlement(streamId: string): SettlementBatch | null {
     batch.settled_at
   );
 
-  // TODO: Call Circle Gateway API here to actually settle USDC
-  // For now, we log and track locally
-  // await settleViaGateway(batch);
-
   return batch;
 }
 
-export function getSettlementHistory(
-  limit: number = 20
-): SettlementBatch[] {
+export async function resolveSettlementTx(
+  settlementId: string
+): Promise<{
+  status: string;
+  txHash: string | null;
+  explorerUrl: string | null;
+}> {
+  return lookupSettlement(settlementId);
+}
+
+export function getSettlementHistory(limit: number = 20): SettlementBatch[] {
   const db = getDb();
   const rows = db
     .prepare(
