@@ -4,8 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:ws": "npx tsx server.ts",
     "build": "next build",
     "start": "next start",
+    "start:ws": "NODE_ENV=production npx tsx server.ts",
     "lint": "eslint"
   },
   "dependencies": {
