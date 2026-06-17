@@ -5,8 +5,9 @@ import { useEffect, useRef, useCallback } from "react";
 interface StreamPlayerProps {
   hlsUrl: string;
   sessionId: string;
-  onSegmentRendered?: (segmentIndex: number) => void;
+  onSegmentRendered?: (segmentIndex: number, url: string) => void;
   onPlayerState?: (state: "playing" | "buffering" | "stalled" | "paused") => void;
+  onBufferHealth?: (seconds: number) => void;
 }
 
 export function StreamPlayer({
@@ -14,15 +15,21 @@ export function StreamPlayer({
   sessionId,
   onSegmentRendered,
   onPlayerState,
+  onBufferHealth,
 }: StreamPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hlsRef = useRef<any>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const segmentCountRef = useRef(0);
+  const heartbeatBatchRef = useRef<{
+    segments: number[];
+    states: string[];
+  }>({ segments: [], states: [] });
 
-  const sendHeartbeat = useCallback(
+  const flushHeartbeat = useCallback(
     async (segmentIndex: number, playerState: string, bufferHealth: number) => {
+      if (!sessionId) return;
       try {
         await fetch("/api/heartbeat", {
           method: "POST",
@@ -36,7 +43,7 @@ export function StreamPlayer({
           }),
         });
       } catch {
-        // Heartbeat failure is non-fatal
+        // non-fatal
       }
     },
     [sessionId]
@@ -65,19 +72,48 @@ export function StreamPlayer({
       hls = new Hls({
         lowLatencyMode: true,
         backBufferLength: 30,
+        maxBufferLength: 10,
+        liveSyncDuration: 3,
       });
 
       hls.loadSource(hlsUrl);
       hls.attachMedia(video!);
 
-      hls.on(Hls.Events.FRAG_LOADED, () => {
-        segmentCountRef.current++;
-        onSegmentRendered?.(segmentCountRef.current);
+      hls.on(
+        Hls.Events.FRAG_LOADED,
+        (_e: unknown, data: { frag: { sn: number; url: string } }) => {
+          const sn =
+            typeof data.frag.sn === "number" ? data.frag.sn : segmentCountRef.current + 1;
+          segmentCountRef.current = sn;
+          heartbeatBatchRef.current.segments.push(sn);
+          onSegmentRendered?.(sn, data.frag.url);
+        }
+      );
+
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        const buffered = video!.buffered;
+        if (buffered.length > 0) {
+          const health = buffered.end(buffered.length - 1) - video!.currentTime;
+          onBufferHealth?.(health);
+        }
       });
 
-      hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal: boolean; type: string }) => {
-        if (data.fatal) {
+      hls.on(
+        Hls.Events.ERROR,
+        (_event: unknown, data: { fatal: boolean; type: string; details: string }) => {
+          if (data.fatal) {
+            onPlayerState?.("stalled");
+            if (data.type === "networkError") {
+              setTimeout(() => hls?.startLoad(), 3000);
+            }
+          }
+        }
+      );
+
+      hls.on(Hls.Events.ERROR, (_e2: unknown, d2: { details: string }) => {
+        if (d2.details === "bufferStalledError") {
           onPlayerState?.("stalled");
+          heartbeatBatchRef.current.states.push("stalled");
         }
       });
 
@@ -90,7 +126,7 @@ export function StreamPlayer({
       hls?.destroy();
       hlsRef.current = null;
     };
-  }, [hlsUrl, onSegmentRendered, onPlayerState]);
+  }, [hlsUrl, onSegmentRendered, onPlayerState, onBufferHealth]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -114,15 +150,15 @@ export function StreamPlayer({
     };
   }, [onPlayerState]);
 
-  // Batched heartbeat every 3 seconds
   useEffect(() => {
     heartbeatRef.current = setInterval(() => {
       const video = videoRef.current;
       if (!video) return;
 
-      const bufferHealth = video.buffered.length > 0
-        ? video.buffered.end(video.buffered.length - 1) - video.currentTime
-        : 0;
+      const bufferHealth =
+        video.buffered.length > 0
+          ? video.buffered.end(video.buffered.length - 1) - video.currentTime
+          : 0;
 
       const state = video.paused
         ? "paused"
@@ -130,16 +166,16 @@ export function StreamPlayer({
           ? "buffering"
           : "playing";
 
-      sendHeartbeat(segmentCountRef.current, state, bufferHealth);
+      flushHeartbeat(segmentCountRef.current, state, bufferHealth);
     }, 3000);
 
     return () => {
       if (heartbeatRef.current) clearInterval(heartbeatRef.current);
     };
-  }, [sendHeartbeat]);
+  }, [flushHeartbeat]);
 
   return (
-    <div className="rounded-xl overflow-hidden border border-card-border bg-black aspect-video">
+    <div className="rounded-xl overflow-hidden border border-card-border bg-black aspect-video relative">
       <video
         ref={videoRef}
         className="w-full h-full"
@@ -148,6 +184,11 @@ export function StreamPlayer({
         muted
         controls
       />
+      {!hlsUrl && (
+        <div className="absolute inset-0 flex items-center justify-center text-zinc-500 text-sm">
+          Waiting for stream...
+        </div>
+      )}
     </div>
   );
 }
