@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import { getDb } from "@/lib/db";
-
-const MIN_CAP = 0.1;
-const MAX_CAP = 100;
+import { checkSessionCreation, sanitizeCap } from "@/lib/safety";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -13,6 +11,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: "Missing stream_id or viewer_wallet" },
       { status: 400 }
+    );
+  }
+
+  const safetyCheck = checkSessionCreation(stream_id, viewer_wallet);
+  if (!safetyCheck.allowed) {
+    return NextResponse.json(
+      { error: safetyCheck.reason },
+      { status: 429 }
     );
   }
 
@@ -29,7 +35,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const cap = Math.min(MAX_CAP, Math.max(MIN_CAP, daily_cap_usdc ?? 1.0));
+  const cap = sanitizeCap(daily_cap_usdc ?? 1.0);
 
   const session = {
     session_id: uuidv4(),
