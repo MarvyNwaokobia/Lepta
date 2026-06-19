@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import { playTick, playPause, playResume } from "@/lib/sounds";
 
 interface MeterWidgetProps {
   ratePerSecond: number;
@@ -16,6 +17,8 @@ export function MeterWidget({
   status,
 }: MeterWidgetProps) {
   const [displayTotal, setDisplayTotal] = useState(totalAccrued);
+  const prevStatus = useRef(status);
+  const tickCount = useRef(0);
 
   useEffect(() => {
     if (status !== "flowing") return;
@@ -25,6 +28,11 @@ export function MeterWidget({
         const next = prev + ratePerSecond;
         return next >= dailyCap ? dailyCap : next;
       });
+      // Tick sound every 3rd second to avoid being annoying
+      tickCount.current++;
+      if (tickCount.current % 3 === 0) {
+        playTick();
+      }
     }, 1000);
 
     return () => clearInterval(interval);
@@ -33,6 +41,17 @@ export function MeterWidget({
   useEffect(() => {
     setDisplayTotal(totalAccrued);
   }, [totalAccrued]);
+
+  // Sound on status change
+  useEffect(() => {
+    if (prevStatus.current === status) return;
+    if (status === "paused" || status === "stopped") {
+      playPause();
+    } else if (status === "flowing" && prevStatus.current === "paused") {
+      playResume();
+    }
+    prevStatus.current = status;
+  }, [status]);
 
   const capPercent = Math.min(100, (displayTotal / dailyCap) * 100);
 
