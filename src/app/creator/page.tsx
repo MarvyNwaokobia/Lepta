@@ -343,6 +343,43 @@ export default function CreatorDashboard() {
 
         {/* Right sidebar */}
         <div className="space-y-4">
+          {/* Stream preview */}
+          <div className="rounded-xl border border-card-border bg-card-bg overflow-hidden">
+            <div className="px-4 py-3 border-b border-card-border flex items-center justify-between">
+              <h3 className="text-sm font-medium">Viewer Preview</h3>
+              <span className="text-xs text-zinc-500">What your audience sees</span>
+            </div>
+            <div className="aspect-video bg-zinc-950 relative flex items-center justify-center">
+              <div className="absolute inset-0 overflow-hidden">
+                <div
+                  className="absolute inset-0 opacity-10"
+                  style={{
+                    backgroundImage: "linear-gradient(45deg, transparent 40%, var(--accent) 50%, transparent 60%)",
+                    backgroundSize: "200% 200%",
+                    animation: activeSessions.length > 0 ? "shimmer 3s ease-in-out infinite" : "none",
+                  }}
+                />
+              </div>
+              <div className="relative z-10 text-center space-y-2">
+                <div className="flex items-center justify-center gap-2">
+                  <div className={`w-2.5 h-2.5 rounded-full ${activeSessions.length > 0 ? "bg-[var(--meter-flowing)] animate-pulse-glow" : "bg-zinc-600"}`} />
+                  <span className="text-xs text-zinc-400 uppercase tracking-wider">
+                    {activeSessions.length > 0 ? "Live" : "Waiting for viewers"}
+                  </span>
+                </div>
+                <div className="text-xs text-zinc-600 font-mono">
+                  ${stream.rate_per_second}/s per viewer
+                </div>
+              </div>
+              <style jsx>{`
+                @keyframes shimmer {
+                  0% { background-position: 200% 0; }
+                  100% { background-position: -200% 0; }
+                }
+              `}</style>
+            </div>
+          </div>
+
           <CreatorWallet sellerAddress={sellerAddress} />
         </div>
       </main>
