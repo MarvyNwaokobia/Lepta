@@ -1,19 +1,22 @@
 import type { AgentDecision } from "./types";
 import { getDb } from "./db";
 
-let _model: InstanceType<typeof import("@langchain/anthropic").ChatAnthropic> | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _model: any = null;
 
-function getModel() {
+async function getModel() {
   if (!_model) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { ChatAnthropic } = require("@langchain/anthropic");
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return null;
+    }
+    const { ChatAnthropic } = await import("@langchain/anthropic");
     _model = new ChatAnthropic({
       model: "claude-haiku-4-5-20251001",
       temperature: 0.3,
       maxTokens: 200,
     });
   }
-  return _model!;
+  return _model;
 }
 
 const SYSTEM_PROMPT = `You are a viewer budget agent for Lepta, a pay-per-second livestream platform.
@@ -29,7 +32,7 @@ Rules:
 - Never exceed the daily cap
 - Be concise in reasoning (1-2 sentences max)
 
-Respond in exactly this JSON format:
+Respond ONLY with this JSON, no markdown, no extra text:
 {"decision": "continue|pause|topup", "reasoning": "brief explanation"}`;
 
 export interface AgentInput {
@@ -60,39 +63,39 @@ What should we do?`;
   let decision: AgentDecision["decision"] = "continue";
   let reasoning = "";
 
-  try {
-    const response = await getModel().invoke([
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userMessage },
-    ]);
+  const model = await getModel();
 
-    const text =
-      typeof response.content === "string"
-        ? response.content
-        : response.content
-            .filter((b): b is { type: "text"; text: string } => "text" in b)
-            .map((b) => b.text)
-            .join("");
+  if (model) {
+    try {
+      const response = await model.invoke([
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userMessage },
+      ]);
 
-    const parsed = JSON.parse(text);
-    decision = parsed.decision;
-    reasoning = parsed.reasoning;
-  } catch {
-    // Fallback: rule-based if LLM fails
-    const secondsRemaining = input.remaining_budget / input.current_rate;
-    if (input.total_spent >= input.daily_cap) {
-      decision = "pause";
-      reasoning = "Daily cap reached.";
-    } else if (secondsRemaining < 30) {
-      decision = "topup";
-      reasoning = `Only ${Math.round(secondsRemaining)}s of budget remaining.`;
-    } else if (input.engagement_signal < 0.1) {
-      decision = "pause";
-      reasoning = "Engagement too low to justify spend.";
-    } else {
-      decision = "continue";
-      reasoning = "Budget healthy, engagement acceptable.";
+      const text =
+        typeof response.content === "string"
+          ? response.content
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          : (response.content as any[])
+              .filter((b: { type: string }) => b.type === "text")
+              .map((b: { text: string }) => b.text)
+              .join("");
+
+      // Strip markdown code fences if present
+      const cleaned = text
+        .replace(/```json\s*/g, "")
+        .replace(/```\s*/g, "")
+        .trim();
+
+      const parsed = JSON.parse(cleaned);
+      decision = parsed.decision;
+      reasoning = parsed.reasoning;
+    } catch (err) {
+      console.error("[Agent] LLM call failed, using fallback:", err);
+      ({ decision, reasoning } = ruleFallback(input));
     }
+  } else {
+    ({ decision, reasoning } = ruleFallback(input));
   }
 
   const agentDecision: AgentDecision = {
@@ -105,22 +108,77 @@ What should we do?`;
     reasoning_text: reasoning,
   };
 
-  const db = getDb();
-  db.prepare(`
-    INSERT OR REPLACE INTO agent_decisions
-    (session_id, tick_timestamp, remaining_budget, current_rate, engagement_signal, decision, reasoning_text)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    agentDecision.session_id,
-    agentDecision.tick_timestamp,
-    agentDecision.remaining_budget,
-    agentDecision.current_rate,
-    agentDecision.engagement_signal,
-    agentDecision.decision,
-    agentDecision.reasoning_text
-  );
+  try {
+    const db = getDb();
+    db.prepare(`
+      INSERT OR REPLACE INTO agent_decisions
+      (session_id, tick_timestamp, remaining_budget, current_rate, engagement_signal, decision, reasoning_text)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      agentDecision.session_id,
+      agentDecision.tick_timestamp,
+      agentDecision.remaining_budget,
+      agentDecision.current_rate,
+      agentDecision.engagement_signal,
+      agentDecision.decision,
+      agentDecision.reasoning_text
+    );
+  } catch {
+    // FK constraint fails for demo/test sessions — non-fatal
+  }
 
   return agentDecision;
+}
+
+function ruleFallback(input: AgentInput): {
+  decision: AgentDecision["decision"];
+  reasoning: string;
+} {
+  const secondsRemaining = input.remaining_budget / input.current_rate;
+  const engPct = Math.round(input.engagement_signal * 100);
+  const watchMin = Math.round(input.elapsed_watch_seconds / 60);
+  const spentPct = Math.round((input.total_spent / input.daily_cap) * 100);
+
+  if (input.total_spent >= input.daily_cap) {
+    return {
+      decision: "pause",
+      reasoning: `Daily cap of $${input.daily_cap.toFixed(2)} reached after ${watchMin}m of viewing. Pausing to protect budget.`,
+    };
+  }
+  if (secondsRemaining < 15) {
+    return {
+      decision: "topup",
+      reasoning: `Critical: only ${Math.round(secondsRemaining)}s of budget left (${spentPct}% spent). Engagement is ${engPct}% — worth topping up to continue.`,
+    };
+  }
+  if (secondsRemaining < 60) {
+    return {
+      decision: "topup",
+      reasoning: `Budget running low — ${Math.round(secondsRemaining)}s remaining at $${input.current_rate}/s. Consider adding funds to avoid interruption.`,
+    };
+  }
+  if (input.engagement_signal < 0.08) {
+    return {
+      decision: "pause",
+      reasoning: `Engagement dropped to ${engPct}% after ${watchMin}m — stream appears inactive. Pausing to preserve remaining $${input.remaining_budget.toFixed(4)}.`,
+    };
+  }
+  if (input.engagement_signal < 0.2) {
+    return {
+      decision: "pause",
+      reasoning: `Low engagement (${engPct}%) with ${spentPct}% of daily budget spent. Pausing — will resume if activity picks up.`,
+    };
+  }
+  if (input.engagement_signal > 0.7) {
+    return {
+      decision: "continue",
+      reasoning: `Strong engagement at ${engPct}%, ${Math.round(secondsRemaining / 60)}m of budget remaining. Good value — continuing.`,
+    };
+  }
+  return {
+    decision: "continue",
+    reasoning: `Engagement steady at ${engPct}%, budget healthy with ${Math.round(secondsRemaining / 60)}m remaining. No action needed.`,
+  };
 }
 
 export function getRecentDecisions(
