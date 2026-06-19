@@ -49,3 +49,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+scripts/DEMO_SCRIPT.md
+scripts/run-demo.sh
